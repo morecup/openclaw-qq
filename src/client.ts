@@ -162,7 +162,7 @@ export class OneBotClient extends EventEmitter {
     this.send("set_group_kick", { group_id: groupId, user_id: userId, reject_add_request: rejectAddRequest });
   }
 
-  private sendWithResponse(action: string, params: any): Promise<any> {
+  public sendWithResponse(action: string, params: any): Promise<any> {
     return new Promise((resolve, reject) => {
       if (this.ws?.readyState !== WebSocket.OPEN) {
         reject(new Error("WebSocket not open"));

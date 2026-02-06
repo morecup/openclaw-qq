@@ -1,5 +1,10 @@
 import { promises as fs } from "node:fs";
+import { createWriteStream } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { pipeline } from "node:stream/promises";
+import path from "node:path";
+import https from "node:https";
+import http from "node:http";
 import {
   type ChannelPlugin,
   type ChannelAccountSnapshot,
@@ -160,6 +165,140 @@ async function resolveMediaUrl(url: string): Promise<string> {
         }
     }
     return url;
+}
+
+const QQ_FILES_DIR = "/tmp/openclaw-qq-files";
+
+async function ensureFilesDir(): Promise<void> {
+    await fs.mkdir(QQ_FILES_DIR, { recursive: true });
+}
+
+function sanitizeFilename(name: string): string {
+    return name.replace(/[^\w\u4e00-\u9fff.\-()（）]/g, "_").slice(0, 200);
+}
+
+async function downloadFile(url: string, filename: string): Promise<string | null> {
+    try {
+        await ensureFilesDir();
+        const safeName = sanitizeFilename(filename);
+        const timestamp = Date.now();
+        const destPath = path.join(QQ_FILES_DIR, `${timestamp}_${safeName}`);
+
+        // Handle local file paths (file:// or absolute path)
+        if (url.startsWith("file://")) {
+            try {
+                const localSrc = fileURLToPath(url);
+                await fs.copyFile(localSrc, destPath);
+                console.log(`[QQ] File copied: ${localSrc} -> ${destPath}`);
+                return destPath;
+            } catch (err) {
+                console.warn(`[QQ] File copy failed: ${err}`);
+                return null;
+            }
+        }
+        if (url.startsWith("/")) {
+            try {
+                await fs.copyFile(url, destPath);
+                console.log(`[QQ] File copied: ${url} -> ${destPath}`);
+                return destPath;
+            } catch (err) {
+                console.warn(`[QQ] File copy failed: ${err}`);
+                return null;
+            }
+        }
+
+        // HTTP(S) download
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            console.warn(`[QQ] Unsupported file URL scheme: ${url.slice(0, 50)}`);
+            return null;
+        }
+
+        const get = url.startsWith("https") ? https.get : http.get;
+
+        return new Promise((resolve) => {
+            const timeout = setTimeout(() => {
+                console.warn("[QQ] File download timeout:", filename);
+                resolve(null);
+            }, 30000);
+
+            const req = get(url, { timeout: 25000 }, (res) => {
+                // Follow redirects (up to 3)
+                if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                    clearTimeout(timeout);
+                    downloadFile(res.headers.location, filename).then(resolve);
+                    return;
+                }
+
+                if (res.statusCode !== 200) {
+                    clearTimeout(timeout);
+                    console.warn(`[QQ] File download failed: HTTP ${res.statusCode} for ${filename}`);
+                    resolve(null);
+                    return;
+                }
+
+                const ws = createWriteStream(destPath);
+                pipeline(res, ws)
+                    .then(() => {
+                        clearTimeout(timeout);
+                        console.log(`[QQ] File downloaded: ${filename} -> ${destPath}`);
+                        resolve(destPath);
+                    })
+                    .catch((err) => {
+                        clearTimeout(timeout);
+                        console.warn(`[QQ] File write failed: ${err}`);
+                        resolve(null);
+                    });
+            });
+
+            req.on("error", (err) => {
+                clearTimeout(timeout);
+                console.warn(`[QQ] File download error: ${err}`);
+                resolve(null);
+            });
+        });
+    } catch (err) {
+        console.warn(`[QQ] downloadFile exception: ${err}`);
+        return null;
+    }
+}
+
+async function getFileUrl(client: OneBotClient, seg: any, isGroup: boolean, groupId?: number): Promise<string | null> {
+    // 1. URL already present in segment data
+    if (seg.data?.url) return seg.data.url;
+
+    // 2. Group file: use get_group_file_url
+    if (isGroup && groupId && seg.data?.file_id) {
+        try {
+            const info = await client.sendWithResponse("get_group_file_url", {
+                group_id: groupId,
+                file_id: seg.data.file_id,
+                busid: seg.data.busid,
+            });
+            if (info?.url) return info.url;
+        } catch (e) {
+            console.warn(`[QQ] get_group_file_url failed:`, e);
+        }
+    }
+
+    // 3. NapCat extended API: /get_file (works for private & group)
+    if (seg.data?.file_id) {
+        try {
+            const info = await client.sendWithResponse("get_file", {
+                file_id: seg.data.file_id,
+            });
+            if (info?.url) return info.url;
+            if (info?.file) return `file://${info.file}`;
+        } catch (e) {
+            console.warn(`[QQ] get_file failed:`, e);
+        }
+    }
+
+    // 4. Try file field as URL directly
+    if (seg.data?.file && (seg.data.file.startsWith("http://") || seg.data.file.startsWith("https://"))) {
+        return seg.data.file;
+    }
+
+    return null;
 }
 
 export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
@@ -403,6 +542,14 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
         });
 
         client.on("message", async (event) => {
+            // Debug: log non-heartbeat events
+            if (event.post_type !== "meta_event") {
+                console.log(`[QQ-DEBUG] event: post_type=${event.post_type}, notice_type=${(event as any).notice_type || "-"}, message_type=${event.message_type || "-"}, sub_type=${event.sub_type || "-"}`);
+                if (event.post_type === "notice" || !event.post_type) {
+                    console.log(`[QQ-DEBUG] full event:`, JSON.stringify(event).slice(0, 1000));
+                }
+            }
+
             if (event.post_type === "meta_event") {
                  if (event.meta_event_type === "lifecycle" && event.sub_type === "connect" && event.self_id) client.setSelfId(event.self_id);
                  return;
@@ -414,6 +561,65 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                     event.message_type = event.group_id ? "group" : "private";
                     event.raw_message = `[动作] 用户戳了你一下`;
                     event.message = [{ type: "text", data: { text: event.raw_message } }];
+                } else return;
+            }
+
+            // Handle private file transfer (offline_file notice)
+            if (event.post_type === "notice" && (event as any).notice_type === "offline_file") {
+                const fileInfo = (event as any).file;
+                if (fileInfo) {
+                    const fileName = fileInfo.name || "未命名";
+                    const fileUrl = fileInfo.url;
+                    let fileText = `[文件: ${fileName}]`;
+                    if (fileUrl) {
+                        const localPath = await downloadFile(fileUrl, fileName);
+                        if (localPath) {
+                            fileText = `[文件: ${fileName}]\n[文件已下载: ${localPath}]`;
+                        } else {
+                            fileText = `[文件: ${fileName}] (下载失败)`;
+                        }
+                    }
+                    event.post_type = "message";
+                    event.message_type = "private";
+                    event.raw_message = fileText;
+                    event.message = [{ type: "text", data: { text: fileText } }];
+                    console.log(`[QQ] Offline file received: ${fileName}, url: ${fileUrl ? "yes" : "no"}`);
+                } else return;
+            }
+
+            // Handle group file upload (group_upload notice)
+            if (event.post_type === "notice" && (event as any).notice_type === "group_upload") {
+                const fileInfo = (event as any).file;
+                if (fileInfo) {
+                    const fileName = fileInfo.name || "未命名";
+                    let fileUrl = fileInfo.url;
+                    // Try to get URL via API if not present
+                    if (!fileUrl && fileInfo.id) {
+                        try {
+                            const info = await client.sendWithResponse("get_group_file_url", {
+                                group_id: event.group_id,
+                                file_id: fileInfo.id,
+                                busid: fileInfo.busid,
+                            });
+                            if (info?.url) fileUrl = info.url;
+                        } catch (e) {
+                            console.warn(`[QQ] get_group_file_url failed for notice:`, e);
+                        }
+                    }
+                    let fileText = `[文件: ${fileName}]`;
+                    if (fileUrl) {
+                        const localPath = await downloadFile(fileUrl, fileName);
+                        if (localPath) {
+                            fileText = `[文件: ${fileName}]\n[文件已下载: ${localPath}]`;
+                        } else {
+                            fileText = `[文件: ${fileName}] (下载失败)`;
+                        }
+                    }
+                    event.post_type = "message";
+                    event.message_type = "group";
+                    event.raw_message = fileText;
+                    event.message = [{ type: "text", data: { text: fileText } }];
+                    console.log(`[QQ] Group file upload: ${fileName}, url: ${fileUrl ? "yes" : "no"}`);
                 } else return;
             }
 
@@ -470,13 +676,20 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                             }
                         } catch (e) {}
                     } else if (seg.type === "file") {
-                         if (!seg.data?.url && isGroup) {
-                             try {
-                                 const info = await (client as any).sendWithResponse("get_group_file_url", { group_id: groupId, file_id: seg.data?.file_id, busid: seg.data?.busid });
-                                 if (info?.url) seg.data.url = info.url;
-                             } catch(e) {}
+                         const fileName = seg.data?.file || seg.data?.name || "未命名";
+                         console.log(`[QQ-DEBUG] file segment data:`, JSON.stringify(seg.data || {}).slice(0, 500));
+                         const fileUrl = await getFileUrl(client, seg, isGroup, groupId);
+                         console.log(`[QQ-DEBUG] resolved fileUrl: ${fileUrl?.slice(0, 200) || "null"}`);
+                         if (fileUrl) {
+                             const localPath = await downloadFile(fileUrl, fileName);
+                             if (localPath) {
+                                 resolvedText += ` [文件: ${fileName}]\n[文件已下载: ${localPath}]`;
+                             } else {
+                                 resolvedText += ` [文件: ${fileName}] (下载失败, URL: ${fileUrl})`;
+                             }
+                         } else {
+                             resolvedText += ` [文件: ${fileName}] (无法获取下载链接)`;
                          }
-                         resolvedText += ` [文件: ${seg.data?.file || "未命名"}]`;
                     }
                 }
                 if (resolvedText) text = resolvedText;
