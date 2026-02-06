@@ -12,6 +12,10 @@ export class OneBotClient extends EventEmitter {
   private options: OneBotClientOptions;
   private reconnectAttempts = 0;
   private maxReconnectDelay = 60000; // Max 1 minute delay
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private selfId: number | null = null;
+  private isAlive = false;
+  private destroyed = false;
 
   constructor(options: OneBotClientOptions) {
     super();
@@ -69,6 +73,7 @@ export class OneBotClient extends EventEmitter {
   }
 
   private scheduleReconnect() {
+    if (this.destroyed) return;
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), this.maxReconnectDelay);
     console.log(`[QQ] Reconnecting in ${delay / 1000}s (Attempt ${this.reconnectAttempts + 1})...`);
     
@@ -201,7 +206,11 @@ export class OneBotClient extends EventEmitter {
   }
 
   disconnect() {
+    this.destroyed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.ws?.removeAllListeners();
     this.ws?.close();
+    this.ws = null;
   }
 }

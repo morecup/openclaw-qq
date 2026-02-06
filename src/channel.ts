@@ -364,6 +364,14 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
 
         if (!config.wsUrl) throw new Error("QQ: wsUrl is required");
 
+        // Clean up any existing client before creating a new one
+        const existingClient = clients.get(account.accountId);
+        if (existingClient) {
+            console.log(`[QQ] Cleaning up existing client for account ${account.accountId}`);
+            existingClient.disconnect();
+            clients.delete(account.accountId);
+        }
+
         const client = new OneBotClient({
             wsUrl: config.wsUrl,
             accessToken: config.accessToken,
