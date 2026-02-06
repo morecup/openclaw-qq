@@ -899,20 +899,62 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
          const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
          if (!client) return { channel: "qq", sent: false, error: "Client not connected" };
          
-         const finalUrl = await resolveMediaUrl(mediaUrl);
-         
-         const message: OneBotMessage = [];
-         if (replyTo) message.push({ type: "reply", data: { id: String(replyTo) } });
-         if (text) message.push({ type: "text", data: { text } });
-         if (isImageFile(mediaUrl)) message.push({ type: "image", data: { file: finalUrl } });
-         else message.push({ type: "text", data: { text: `[CQ:file,file=${finalUrl},url=${finalUrl}]` } });
-         
-         if (to.startsWith("group:")) client.sendGroupMsg(parseInt(to.replace("group:", ""), 10), message);
-         else if (to.startsWith("guild:")) {
-             const parts = to.split(":");
-             if (parts.length >= 3) client.sendGuildChannelMsg(parts[1], parts[2], message);
+         // Send text part first if present
+         if (text) {
+             const message: OneBotMessage = [];
+             if (replyTo) message.push({ type: "reply", data: { id: String(replyTo) } });
+             message.push({ type: "text", data: { text } });
+             if (to.startsWith("group:")) client.sendGroupMsg(parseInt(to.replace("group:", ""), 10), message);
+             else if (to.startsWith("guild:")) {
+                 const parts = to.split(":");
+                 if (parts.length >= 3) client.sendGuildChannelMsg(parts[1], parts[2], message);
+             }
+             else client.sendPrivateMsg(parseInt(to, 10), message);
+             await sleep(500);
          }
-         else client.sendPrivateMsg(parseInt(to, 10), message);
+
+         // Send media
+         if (isImageFile(mediaUrl)) {
+             const finalUrl = await resolveMediaUrl(mediaUrl);
+             const message: OneBotMessage = [];
+             if (!text && replyTo) message.push({ type: "reply", data: { id: String(replyTo) } });
+             message.push({ type: "image", data: { file: finalUrl } });
+             if (to.startsWith("group:")) client.sendGroupMsg(parseInt(to.replace("group:", ""), 10), message);
+             else if (to.startsWith("guild:")) {
+                 const parts = to.split(":");
+                 if (parts.length >= 3) client.sendGuildChannelMsg(parts[1], parts[2], message);
+             }
+             else client.sendPrivateMsg(parseInt(to, 10), message);
+         } else {
+             // Non-image file: use upload API
+             const filePath = mediaUrl.startsWith("file://") ? fileURLToPath(mediaUrl) : mediaUrl;
+             const fileName = path.basename(filePath);
+             try {
+                 if (to.startsWith("group:")) {
+                     const groupId = parseInt(to.replace("group:", ""), 10);
+                     await client.sendWithResponse("upload_group_file", {
+                         group_id: groupId,
+                         file: filePath,
+                         name: fileName,
+                     });
+                 } else if (!to.startsWith("guild:")) {
+                     const userId = parseInt(to, 10);
+                     await client.sendWithResponse("upload_private_file", {
+                         user_id: userId,
+                         file: filePath,
+                         name: fileName,
+                     });
+                 }
+             } catch (err) {
+                 console.warn(`[QQ] File upload failed, falling back to CQ code:`, err);
+                 // Fallback: send as CQ code text
+                 const finalUrl = await resolveMediaUrl(mediaUrl);
+                 const msg = `[CQ:file,file=${finalUrl},name=${fileName}]`;
+                 if (to.startsWith("group:")) client.sendGroupMsg(parseInt(to.replace("group:", ""), 10), msg);
+                 else client.sendPrivateMsg(parseInt(to, 10), msg);
+             }
+         }
+         
          return { channel: "qq", sent: true };
     },
     // @ts-ignore
