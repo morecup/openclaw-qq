@@ -807,15 +807,15 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                          let chunk = chunks[i];
                          if (isGroup && i === 0) chunk = `[CQ:at,qq=${userId}] ${chunk}`;
                          
-                         if (isGroup) client.sendGroupMsg(groupId, chunk);
-                         else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, chunk);
-                         else client.sendPrivateMsg(userId, chunk);
+                         if (isGroup) await client.sendGroupMsg(groupId, chunk);
+                         else if (isGuild) await client.sendGuildChannelMsg(guildId, channelId, chunk);
+                         else await client.sendPrivateMsg(userId, chunk);
                          
                          if (!isGuild && config.enableTTS && i === 0 && chunk.length < 100) {
                              const tts = chunk.replace(/\[CQ:.*?\]/g, "").trim();
                              if (tts) { 
-                                 if (isGroup) client.sendGroupMsg(groupId, `[CQ:tts,text=${tts}]`); 
-                                 else client.sendPrivateMsg(userId, `[CQ:tts,text=${tts}]`); 
+                                 if (isGroup) await client.sendGroupMsg(groupId, `[CQ:tts,text=${tts}]`); 
+                                 else await client.sendPrivateMsg(userId, `[CQ:tts,text=${tts}]`); 
                              }
                          }
                          
@@ -829,14 +829,14 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                              const url = await resolveMediaUrl(f.url);
                              if (isImageFile(url)) {
                                  const imgMsg = `[CQ:image,file=${url}]`;
-                                 if (isGroup) client.sendGroupMsg(groupId, imgMsg);
-                                 else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, imgMsg);
-                                 else client.sendPrivateMsg(userId, imgMsg);
+                                 if (isGroup) await client.sendGroupMsg(groupId, imgMsg);
+                                 else if (isGuild) await client.sendGuildChannelMsg(guildId, channelId, imgMsg);
+                                 else await client.sendPrivateMsg(userId, imgMsg);
                              } else {
                                  const txtMsg = `[CQ:file,file=${url},name=${f.name || 'file'}]`;
-                                 if (isGroup) client.sendGroupMsg(groupId, txtMsg);
-                                 else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, `[文件] ${url}`);
-                                 else client.sendPrivateMsg(userId, txtMsg);
+                                 if (isGroup) await client.sendGroupMsg(groupId, txtMsg);
+                                 else if (isGuild) await client.sendGuildChannelMsg(guildId, channelId, `[文件] ${url}`);
+                                 else await client.sendPrivateMsg(userId, txtMsg);
                              }
                              if (config.rateLimitMs > 0) await sleep(config.rateLimitMs);
                          } 
@@ -900,12 +900,12 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             let message: OneBotMessage | string = chunks[i];
             if (replyTo && i === 0) message = [ { type: "reply", data: { id: String(replyTo) } }, { type: "text", data: { text: chunks[i] } } ];
             
-            if (to.startsWith("group:")) client.sendGroupMsg(parseInt(to.replace("group:", ""), 10), message);
+            if (to.startsWith("group:")) await client.sendGroupMsg(parseInt(to.replace("group:", ""), 10), message);
             else if (to.startsWith("guild:")) {
                 const parts = to.split(":");
-                if (parts.length >= 3) client.sendGuildChannelMsg(parts[1], parts[2], message);
+                if (parts.length >= 3) await client.sendGuildChannelMsg(parts[1], parts[2], message);
             }
-            else client.sendPrivateMsg(parseInt(to, 10), message);
+            else await client.sendPrivateMsg(parseInt(to, 10), message);
             
             if (chunks.length > 1) await sleep(1000); 
         }
@@ -920,12 +920,12 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
              const message: OneBotMessage = [];
              if (replyTo) message.push({ type: "reply", data: { id: String(replyTo) } });
              message.push({ type: "text", data: { text } });
-             if (to.startsWith("group:")) client.sendGroupMsg(parseInt(to.replace("group:", ""), 10), message);
+             if (to.startsWith("group:")) await client.sendGroupMsg(parseInt(to.replace("group:", ""), 10), message);
              else if (to.startsWith("guild:")) {
                  const parts = to.split(":");
-                 if (parts.length >= 3) client.sendGuildChannelMsg(parts[1], parts[2], message);
+                 if (parts.length >= 3) await client.sendGuildChannelMsg(parts[1], parts[2], message);
              }
-             else client.sendPrivateMsg(parseInt(to, 10), message);
+             else await client.sendPrivateMsg(parseInt(to, 10), message);
              await sleep(500);
          }
 
@@ -935,12 +935,12 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
              const message: OneBotMessage = [];
              if (!text && replyTo) message.push({ type: "reply", data: { id: String(replyTo) } });
              message.push({ type: "image", data: { file: finalUrl } });
-             if (to.startsWith("group:")) client.sendGroupMsg(parseInt(to.replace("group:", ""), 10), message);
+             if (to.startsWith("group:")) await client.sendGroupMsg(parseInt(to.replace("group:", ""), 10), message);
              else if (to.startsWith("guild:")) {
                  const parts = to.split(":");
-                 if (parts.length >= 3) client.sendGuildChannelMsg(parts[1], parts[2], message);
+                 if (parts.length >= 3) await client.sendGuildChannelMsg(parts[1], parts[2], message);
              }
-             else client.sendPrivateMsg(parseInt(to, 10), message);
+             else await client.sendPrivateMsg(parseInt(to, 10), message);
          } else {
              // Non-image file: use upload API
              const filePath = mediaUrl.startsWith("file://") ? fileURLToPath(mediaUrl) : mediaUrl;
@@ -966,8 +966,8 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                  // Fallback: send as CQ code text
                  const finalUrl = await resolveMediaUrl(mediaUrl);
                  const msg = `[CQ:file,file=${finalUrl},name=${fileName}]`;
-                 if (to.startsWith("group:")) client.sendGroupMsg(parseInt(to.replace("group:", ""), 10), msg);
-                 else client.sendPrivateMsg(parseInt(to, 10), msg);
+                 if (to.startsWith("group:")) await client.sendGroupMsg(parseInt(to.replace("group:", ""), 10), msg);
+                 else await client.sendPrivateMsg(parseInt(to, 10), msg);
              }
          }
          
