@@ -624,7 +624,23 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             }
 
             if (event.post_type !== "message") return;
+
+            // Skip messages from the bot itself (echo / self-sent)
+            const selfId = client.getSelfId() ?? event.self_id;
+            if (selfId && String(event.user_id) === String(selfId)) {
+                console.debug(`[QQ] Ignoring message from self (user_id=${event.user_id})`);
+                return;
+            }
+
             if ([2854196310].includes(event.user_id)) return;
+
+            // Ignore empty message events (NapCat/QQ client actions like file download can emit these)
+            const rawTrimmed = (event.raw_message || "").trim();
+            const segLen = Array.isArray(event.message) ? event.message.length : 0;
+            if (!rawTrimmed && segLen === 0) {
+                console.debug(`[QQ] Ignoring empty message event (message_id=${event.message_id || "-"})`);
+                return;
+            }
 
             if (config.enableDeduplication !== false && event.message_id) {
                 const msgIdKey = String(event.message_id);
