@@ -984,7 +984,7 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
   messaging: { 
       normalizeTarget,
       targetResolver: {
-          looksLikeId: (id) => /^\d{5,12}$/.test(id) || /^guild:/.test(id),
+          looksLikeId: (id) => /^\d{5,12}$/.test(id) || /^group:/.test(id) || /^guild:/.test(id),
           hint: "QQ号, 群号 (group:123), 或频道 (guild:id:channel)",
       }
   },
