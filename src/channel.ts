@@ -153,15 +153,39 @@ function processAntiRisk(text: string): string {
 }
 
 async function resolveMediaUrl(url: string): Promise<string> {
+    // Handle file:// URLs
     if (url.startsWith("file:")) {
         try {
-            const path = fileURLToPath(url);
-            const data = await fs.readFile(path);
+            const filePath = fileURLToPath(url);
+            const data = await fs.readFile(filePath);
+            const ext = filePath.split('.').pop()?.toLowerCase() || 'png';
             const base64 = data.toString("base64");
             return `base64://${base64}`;
         } catch (e) {
             console.warn(`[QQ] Failed to convert local file to base64: ${e}`);
-            return url; // Fallback to original
+            return url;
+        }
+    }
+    // Handle absolute local paths (e.g. /tmp/screenshot.png)
+    if (url.startsWith("/") && !url.startsWith("//")) {
+        try {
+            const data = await fs.readFile(url);
+            const base64 = data.toString("base64");
+            return `base64://${base64}`;
+        } catch (e) {
+            console.warn(`[QQ] Failed to convert absolute path to base64: ${e}`);
+            return url;
+        }
+    }
+    // Handle relative paths (e.g. ./screenshot.png)
+    if (url.startsWith("./") || url.startsWith("../")) {
+        try {
+            const data = await fs.readFile(url);
+            const base64 = data.toString("base64");
+            return `base64://${base64}`;
+        } catch (e) {
+            console.warn(`[QQ] Failed to convert relative path to base64: ${e}`);
+            return url;
         }
     }
     return url;
@@ -798,48 +822,97 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             const runtime = getQQRuntime();
 
             const deliver = async (payload: ReplyPayload) => {
-                 const send = async (msg: string) => {
-                     let processed = msg;
+                 // Collect and resolve media URLs
+                 const rawMediaUrls = (payload as any).mediaUrls ?? ((payload as any).mediaUrl ? [(payload as any).mediaUrl] : []);
+                 const resolvedMedia: { url: string; rawUrl: string; isImage: boolean }[] = [];
+                 for (let rawUrl of rawMediaUrls) {
+                     if (!rawUrl) continue;
+                     try {
+                         if (rawUrl.startsWith("./") || rawUrl.startsWith("../")) {
+                             const workspace = runtime.config?.agents?.defaults?.workspace || '/root/.openclaw/workspace';
+                             rawUrl = path.resolve(workspace, rawUrl);
+                         }
+                         const url = await resolveMediaUrl(rawUrl);
+                         resolvedMedia.push({ url, rawUrl, isImage: isImageFile(url) || isImageFile(rawUrl) });
+                     } catch(err: any) {
+                         console.warn(`[QQ] Failed to resolve media ${rawUrl}:`, err?.message);
+                     }
+                 }
+                 // Also collect from payload.files (legacy path)
+                 if (payload.files) {
+                     for (const f of payload.files) {
+                         if (f.url) {
+                             try {
+                                 const url = await resolveMediaUrl(f.url);
+                                 resolvedMedia.push({ url, rawUrl: f.url, isImage: isImageFile(url) });
+                             } catch(err: any) {
+                                 console.warn(`[QQ] Failed to resolve file ${f.url}:`, err?.message);
+                             }
+                         }
+                     }
+                 }
+
+                 const imageMedia = resolvedMedia.filter(m => m.isImage);
+                 const fileMedia = resolvedMedia.filter(m => !m.isImage);
+                 const hasText = Boolean(payload.text?.trim());
+
+                 // Combined send: text + images in one message (with @ in groups)
+                 if (hasText && imageMedia.length > 0) {
+                     let processed = payload.text!;
+                     if (config.formatMarkdown) processed = stripMarkdown(processed);
+                     if (config.antiRiskMode) processed = processAntiRisk(processed);
+                     const segments: any[] = [];
+                     if (isGroup) segments.push({ type: "at", data: { qq: String(userId) } });
+                     segments.push({ type: "text", data: { text: isGroup ? ` ${processed}` : processed } });
+                     for (const m of imageMedia) {
+                         segments.push({ type: "image", data: { file: m.url } });
+                     }
+                     if (isGroup) await client.sendGroupMsg(groupId, segments);
+                     else if (isGuild) await client.sendGuildChannelMsg(guildId, channelId, segments);
+                     else await client.sendPrivateMsg(userId, segments);
+                 } else if (hasText) {
+                     // Text only: use original chunked send with @
+                     let processed = payload.text!;
                      if (config.formatMarkdown) processed = stripMarkdown(processed);
                      if (config.antiRiskMode) processed = processAntiRisk(processed);
                      const chunks = splitMessage(processed, config.maxMessageLength || 4000);
                      for (let i = 0; i < chunks.length; i++) {
                          let chunk = chunks[i];
                          if (isGroup && i === 0) chunk = `[CQ:at,qq=${userId}] ${chunk}`;
-                         
                          if (isGroup) await client.sendGroupMsg(groupId, chunk);
                          else if (isGuild) await client.sendGuildChannelMsg(guildId, channelId, chunk);
                          else await client.sendPrivateMsg(userId, chunk);
-                         
-                         if (!isGuild && config.enableTTS && i === 0 && chunk.length < 100) {
-                             const tts = chunk.replace(/\[CQ:.*?\]/g, "").trim();
-                             if (tts) { 
-                                 if (isGroup) await client.sendGroupMsg(groupId, `[CQ:tts,text=${tts}]`); 
-                                 else await client.sendPrivateMsg(userId, `[CQ:tts,text=${tts}]`); 
-                             }
-                         }
-                         
                          if (chunks.length > 1 && config.rateLimitMs > 0) await sleep(config.rateLimitMs);
                      }
-                 };
-                 if (payload.text) await send(payload.text);
-                 if (payload.files) {
-                     for (const f of payload.files) { 
-                         if (f.url) { 
-                             const url = await resolveMediaUrl(f.url);
-                             if (isImageFile(url)) {
-                                 const imgMsg = `[CQ:image,file=${url}]`;
-                                 if (isGroup) await client.sendGroupMsg(groupId, imgMsg);
-                                 else if (isGuild) await client.sendGuildChannelMsg(guildId, channelId, imgMsg);
-                                 else await client.sendPrivateMsg(userId, imgMsg);
-                             } else {
-                                 const txtMsg = `[CQ:file,file=${url},name=${f.name || 'file'}]`;
-                                 if (isGroup) await client.sendGroupMsg(groupId, txtMsg);
-                                 else if (isGuild) await client.sendGuildChannelMsg(guildId, channelId, `[文件] ${url}`);
-                                 else await client.sendPrivateMsg(userId, txtMsg);
-                             }
-                             if (config.rateLimitMs > 0) await sleep(config.rateLimitMs);
-                         } 
+                 } else if (imageMedia.length > 0) {
+                     // Image only: send with @ in groups
+                     for (const m of imageMedia) {
+                         const segments: any[] = [];
+                         if (isGroup) segments.push({ type: "at", data: { qq: String(userId) } });
+                         segments.push({ type: "image", data: { file: m.url } });
+                         if (isGroup) await client.sendGroupMsg(groupId, segments);
+                         else if (isGuild) await client.sendGuildChannelMsg(guildId, channelId, `[CQ:image,file=${m.url}]`);
+                         else await client.sendPrivateMsg(userId, segments);
+                         if (config.rateLimitMs > 0) await sleep(config.rateLimitMs);
+                     }
+                 }
+
+                 // Non-image files always sent separately
+                 for (const m of fileMedia) {
+                     const name = m.rawUrl.split('/').pop() || 'file';
+                     const txtMsg = `[CQ:file,file=${m.url},name=${name}]`;
+                     if (isGroup) await client.sendGroupMsg(groupId, txtMsg);
+                     else if (isGuild) await client.sendGuildChannelMsg(guildId, channelId, `[文件] ${m.url}`);
+                     else await client.sendPrivateMsg(userId, txtMsg);
+                     if (config.rateLimitMs > 0) await sleep(config.rateLimitMs);
+                 }
+
+                 // TTS support (text-only scenarios)
+                 if (hasText && !isGuild && config.enableTTS && (payload.text?.length ?? 0) < 100 && imageMedia.length === 0) {
+                     const tts = (payload.text ?? "").replace(/\[CQ:.*?\]/g, "").trim();
+                     if (tts) {
+                         if (isGroup) await client.sendGroupMsg(groupId, `[CQ:tts,text=${tts}]`);
+                         else await client.sendPrivateMsg(userId, `[CQ:tts,text=${tts}]`);
                      }
                  }
             };

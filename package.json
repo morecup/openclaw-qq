@@ -14,9 +14,5 @@
   "dependencies": {
     "ws": "^8.18.0",
     "zod": "^4.3.6"
-  },
-  "devDependencies": {
-    "openclaw": "workspace:*",
-    "typescript": "^5.9.3"
   }
 }
