@@ -19,6 +19,10 @@ export const QQConfigSchema = z.object({
   enableTTS: z.boolean().optional().default(false).describe("Experimental: Convert AI text replies to voice (TTS)"),
   enableGuilds: z.boolean().optional().default(true).describe("Enable QQ Guild (Channel) support"),
   rateLimitMs: z.number().optional().default(1000).describe("Delay in ms between sent messages to avoid risk"),
+  groupSettings: z.record(z.string(), z.object({
+    requireMention: z.boolean().optional().describe("Override requireMention for this group"),
+    historyLimit: z.number().optional().describe("Override historyLimit for this group"),
+  })).optional().describe("Per-group settings (key is group ID). Overrides global requireMention/historyLimit per group."),
 });
 
 export type QQConfig = z.infer<typeof QQConfigSchema>;

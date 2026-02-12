@@ -682,6 +682,11 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             const guildId = event.guild_id;
             const channelId = event.channel_id;
             
+            // Resolve per-group effective settings
+            const groupOverride = isGroup && groupId ? config.groupSettings?.[String(groupId)] : undefined;
+            const effectiveRequireMention = groupOverride?.requireMention ?? config.requireMention;
+            const effectiveHistoryLimit = groupOverride?.historyLimit ?? config.historyLimit ?? 5;
+            
             let text = event.raw_message || "";
             
             if (Array.isArray(event.message)) {
@@ -781,12 +786,11 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             }
             
             let historyContext = "";
-            if (isGroup && config.historyLimit !== 0) {
+            if (isGroup && effectiveRequireMention && effectiveHistoryLimit !== 0) {
                  try {
                      const history = await client.getGroupMsgHistory(groupId);
                      if (history?.messages) {
-                         const limit = config.historyLimit || 5;
-                         historyContext = history.messages.slice(-(limit + 1), -1).map((m: any) => `${m.sender?.nickname || m.user_id}: ${cleanCQCodes(m.raw_message || "")}`).join("\n");
+                         historyContext = history.messages.slice(-(effectiveHistoryLimit + 1), -1).map((m: any) => `${m.sender?.nickname || m.user_id}: ${cleanCQCodes(m.raw_message || "")}`).join("\n");
                      }
                  } catch (e) {}
             }
@@ -797,7 +801,7 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             }
             
             const checkMention = isGroup || isGuild;
-            if (checkMention && config.requireMention && !isTriggered) {
+            if (checkMention && effectiveRequireMention && !isTriggered) {
                 const selfId = client.getSelfId();
                 const effectiveSelfId = selfId ?? event.self_id;
                 if (!effectiveSelfId) return;
