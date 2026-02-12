@@ -826,6 +826,30 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             const runtime = getQQRuntime();
 
             const deliver = async (payload: ReplyPayload) => {
+                 // Fallback: extract absolute-path MEDIA: tokens that core rejected (security filter)
+                 // Core only allows ./ relative paths; we handle /absolute/paths here at plugin level
+                 const MEDIA_FALLBACK_RE = /^MEDIA:\s*(.+)$/gim;
+                 if (payload.text) {
+                     const extraMedia: string[] = [];
+                     const cleanedLines: string[] = [];
+                     for (const line of payload.text.split('\n')) {
+                         const m = /^MEDIA:\s*(.+)$/i.exec(line.trim());
+                         if (m) {
+                             const candidate = m[1].replace(/^[`"']+/, '').replace(/[`"']+$/, '').trim();
+                             if (candidate.startsWith('/') && !candidate.includes('..')) {
+                                 extraMedia.push(candidate);
+                                 continue; // remove this line from text
+                             }
+                         }
+                         cleanedLines.push(line);
+                     }
+                     if (extraMedia.length > 0) {
+                         payload.text = cleanedLines.join('\n').trim();
+                         const existing = (payload as any).mediaUrls ?? ((payload as any).mediaUrl ? [(payload as any).mediaUrl] : []);
+                         (payload as any).mediaUrls = [...existing, ...extraMedia];
+                     }
+                 }
+
                  // Collect and resolve media URLs
                  const rawMediaUrls = (payload as any).mediaUrls ?? ((payload as any).mediaUrl ? [(payload as any).mediaUrl] : []);
                  const resolvedMedia: { url: string; rawUrl: string; isImage: boolean }[] = [];
