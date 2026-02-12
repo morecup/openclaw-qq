@@ -960,8 +960,13 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             if (historyContext) systemBlock += `<history>\n${historyContext}\n</history>\n\n`;
             bodyWithReply = systemBlock + bodyWithReply;
 
+            // Append conversation context (group/guild info) so the model knows where the message is from
+            let conversationContext = "";
+            if (isGroup) conversationContext = ` [in: group:${groupId}]`;
+            else if (isGuild) conversationContext = ` [in: guild:${guildId}:${channelId}]`;
+
             const ctxPayload = runtime.channel.reply.finalizeInboundContext({
-                Provider: "qq", Channel: "qq", From: fromId, To: "qq:bot", Body: bodyWithReply, RawBody: text,
+                Provider: "qq", Channel: "qq", From: fromId, To: "qq:bot", Body: bodyWithReply + conversationContext, RawBody: text,
                 SenderId: String(userId), SenderName: event.sender?.nickname || "Unknown", ConversationLabel: conversationLabel,
                 SessionKey: `qq:${fromId}`, AccountId: account.accountId, ChatType: isGroup ? "group" : isGuild ? "channel" : "direct", Timestamp: event.time * 1000,
                 OriginatingChannel: "qq", OriginatingTo: fromId, CommandAuthorized: true,
