@@ -26,6 +26,7 @@ export type ResolvedQQAccount = ChannelAccountSnapshot & {
 };
 
 const memberCache = new Map<string, { name: string, time: number }>();
+const groupNameCache = new Map<string, { name: string, time: number }>();
 
 function getCachedMemberName(groupId: string, userId: string): string | null {
     const key = `${groupId}:${userId}`;
@@ -38,6 +39,16 @@ function getCachedMemberName(groupId: string, userId: string): string | null {
 
 function setCachedMemberName(groupId: string, userId: string, name: string) {
     memberCache.set(`${groupId}:${userId}`, { name, time: Date.now() });
+}
+
+function getCachedGroupName(groupId: string): string | null {
+    const cached = groupNameCache.get(groupId);
+    if (cached && Date.now() - cached.time < 3600000) return cached.name;
+    return null;
+}
+
+function setCachedGroupName(groupId: string, name: string) {
+    groupNameCache.set(groupId, { name, time: Date.now() });
 }
 
 function extractImageUrls(message: OneBotMessage | string | undefined, maxImages = 3): string[] {
@@ -817,7 +828,16 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             let conversationLabel = `QQ User ${userId}`;
             if (isGroup) {
                 fromId = `group:${groupId}`;
-                conversationLabel = `QQ Group ${groupId}`;
+                // Resolve group name with cache
+                let groupName = getCachedGroupName(String(groupId));
+                if (!groupName) {
+                    try {
+                        const info = await client.sendWithResponse("get_group_info", { group_id: groupId });
+                        groupName = info?.group_name || null;
+                        if (groupName) setCachedGroupName(String(groupId), groupName);
+                    } catch (e) {}
+                }
+                conversationLabel = groupName ? `QQ Group「${groupName}」(${groupId})` : `QQ Group ${groupId}`;
             } else if (isGuild) {
                 fromId = `guild:${guildId}:${channelId}`;
                 conversationLabel = `QQ Guild ${guildId} Channel ${channelId}`;
