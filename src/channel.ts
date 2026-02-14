@@ -2,9 +2,13 @@ import { promises as fs } from "node:fs";
 import { createWriteStream } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
+import { exec as execCb } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import https from "node:https";
 import http from "node:http";
+
+const execAsync = promisify(execCb);
 import {
   type ChannelPlugin,
   type ChannelAccountSnapshot,
@@ -146,6 +150,83 @@ function stripMarkdown(text: string): string {
              return match.replace(/\|/g, " ").trim();
         })
         .replace(/^[\-\*]\s+/gm, "• "); // Lists
+}
+
+const CODE_BLOCK_RE = /```(\w*)\n?([\s\S]*?)```/g;
+const CODE2IMG_SCRIPT = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..", "scripts", "code2img.py"
+);
+
+/**
+ * Extract code blocks from text, render each to a syntax-highlighted PNG,
+ * and return an interleaved array of OneBot message segments (text + image).
+ * Text portions are run through stripMarkdown + processAntiRisk as needed.
+ */
+async function renderCodeBlocks(
+    text: string,
+    formatMarkdown: boolean,
+    antiRiskMode: boolean
+): Promise<{ segments: any[]; hasCodeImages: boolean }> {
+    const segments: any[] = [];
+    let hasCodeImages = false;
+    let lastIndex = 0;
+
+    // Collect all code block matches first
+    const matches: { index: number; length: number; lang: string; code: string }[] = [];
+    let m: RegExpExecArray | null;
+    const re = new RegExp(CODE_BLOCK_RE.source, CODE_BLOCK_RE.flags);
+    while ((m = re.exec(text)) !== null) {
+        matches.push({ index: m.index, length: m[0].length, lang: m[1] || "", code: m[2] });
+    }
+
+    if (matches.length === 0) {
+        return { segments: [], hasCodeImages: false };
+    }
+
+    for (const cb of matches) {
+        // Text before this code block
+        const before = text.slice(lastIndex, cb.index);
+        if (before.trim()) {
+            let processed = before;
+            if (formatMarkdown) processed = stripMarkdown(processed);
+            if (antiRiskMode) processed = processAntiRisk(processed);
+            segments.push({ type: "text", data: { text: processed } });
+        }
+
+        // Render code block to image
+        try {
+            const inputJson = JSON.stringify({ code: cb.code, lang: cb.lang });
+            const tmpFile = `/tmp/openclaw-qq-codeimg/input_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.json`;
+            await fs.writeFile(tmpFile, inputJson);
+            const { stdout } = await execAsync(
+                `python3 "${CODE2IMG_SCRIPT}" < "${tmpFile}"`,
+                { timeout: 15000 }
+            );
+            await fs.unlink(tmpFile).catch(() => {});
+            const imgPath = stdout.trim();
+            const imgData = await fs.readFile(imgPath);
+            const base64 = imgData.toString("base64");
+            segments.push({ type: "image", data: { file: `base64://${base64}` } });
+            hasCodeImages = true;
+        } catch (e: any) {
+            console.warn(`[QQ] Code block render failed, falling back to text:`, e?.message);
+            segments.push({ type: "text", data: { text: cb.code } });
+        }
+
+        lastIndex = cb.index + cb.length;
+    }
+
+    // Remaining text after last code block
+    const after = text.slice(lastIndex);
+    if (after.trim()) {
+        let processed = after;
+        if (formatMarkdown) processed = stripMarkdown(processed);
+        if (antiRiskMode) processed = processAntiRisk(processed);
+        segments.push({ type: "text", data: { text: processed } });
+    }
+
+    return { segments, hasCodeImages };
 }
 
 function processAntiRisk(text: string): string {
@@ -890,8 +971,49 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                  const fileMedia = resolvedMedia.filter(m => !m.isImage);
                  const hasText = Boolean(payload.text?.trim());
 
-                 // Combined send: text + images in one message (with @ in groups)
-                 if (hasText && imageMedia.length > 0) {
+                 // Check for code blocks in text → render as syntax-highlighted images
+                 const hasCodeBlocks = hasText && config.formatMarkdown && CODE_BLOCK_RE.test(payload.text!);
+                 if (hasCodeBlocks) {
+                     const { segments: codeSegments, hasCodeImages } = await renderCodeBlocks(
+                         payload.text!, config.formatMarkdown, !!config.antiRiskMode
+                     );
+                     if (hasCodeImages) {
+                         const segments: any[] = [];
+                         if (isGroup) segments.push({ type: "at", data: { qq: String(userId) } });
+                         // Prepend a space after @ for first text segment in groups
+                         let firstText = true;
+                         for (const seg of codeSegments) {
+                             if (isGroup && firstText && seg.type === "text") {
+                                 segments.push({ type: "text", data: { text: ` ${seg.data.text}` } });
+                                 firstText = false;
+                             } else {
+                                 segments.push(seg);
+                                 if (seg.type === "text") firstText = false;
+                             }
+                         }
+                         // Append any additional media images
+                         for (const m of imageMedia) {
+                             segments.push({ type: "image", data: { file: m.url } });
+                         }
+                         if (isGroup) await client.sendGroupMsg(groupId, segments);
+                         else if (isGuild) await client.sendGuildChannelMsg(guildId, channelId, segments);
+                         else await client.sendPrivateMsg(userId, segments);
+                     } else {
+                         // Code render failed for all blocks, fall through to normal text path
+                         let processed = payload.text!;
+                         if (config.formatMarkdown) processed = stripMarkdown(processed);
+                         if (config.antiRiskMode) processed = processAntiRisk(processed);
+                         const segments: any[] = [];
+                         if (isGroup) segments.push({ type: "at", data: { qq: String(userId) } });
+                         segments.push({ type: "text", data: { text: isGroup ? ` ${processed}` : processed } });
+                         for (const m of imageMedia) {
+                             segments.push({ type: "image", data: { file: m.url } });
+                         }
+                         if (isGroup) await client.sendGroupMsg(groupId, segments);
+                         else if (isGuild) await client.sendGuildChannelMsg(guildId, channelId, segments);
+                         else await client.sendPrivateMsg(userId, segments);
+                     }
+                 } else if (hasText && imageMedia.length > 0) {
                      let processed = payload.text!;
                      if (config.formatMarkdown) processed = stripMarkdown(processed);
                      if (config.antiRiskMode) processed = processAntiRisk(processed);
