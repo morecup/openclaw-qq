@@ -134,7 +134,7 @@ function splitMessage(text: string, limit: number): string[] {
 
 function stripMarkdown(text: string): string {
     return text
-        .replace(/```[\s\S]*?```/g, "[代码块]") // Code blocks FIRST (before inline code eats the backticks)
+        .replace(/```(?:\w*\n)?([\s\S]*?)```/g, "$1") // Code blocks: strip markers & lang tag, keep content
         .replace(/\*\*(.*?)\*\*/g, "$1") // Bold
         .replace(/(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)/g, "$1") // Italic (avoid matching **)
         .replace(/`([^`]+)`/g, "$1")     // Inline code (won't match empty backtick pairs)
