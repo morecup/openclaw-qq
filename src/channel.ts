@@ -134,13 +134,14 @@ function splitMessage(text: string, limit: number): string[] {
 
 function stripMarkdown(text: string): string {
     return text
+        .replace(/```[\s\S]*?```/g, "[代码块]") // Code blocks FIRST (before inline code eats the backticks)
         .replace(/\*\*(.*?)\*\*/g, "$1") // Bold
-        .replace(/\*(.*?)\*/g, "$1")     // Italic
-        .replace(/`(.*?)`/g, "$1")       // Inline code
+        .replace(/(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)/g, "$1") // Italic (avoid matching **)
+        .replace(/`([^`]+)`/g, "$1")     // Inline code (won't match empty backtick pairs)
         .replace(/#+\s+(.*)/g, "$1")     // Headers
-        .replace(/\[(.*?)\]\(.*?\)/g, "$1") // Links
+        .replace(/\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g, "$1 ( $2 )") // HTTP links: keep URL visible
+        .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // Non-URL links: text only
         .replace(/^\s*>\s+(.*)/gm, "▎$1") // Blockquotes
-        .replace(/```[\s\S]*?```/g, "[代码块]") // Code blocks
         .replace(/^\|.*\|$/gm, (match) => { // Simple table row approximation
              return match.replace(/\|/g, " ").trim();
         })
@@ -148,7 +149,13 @@ function stripMarkdown(text: string): string {
 }
 
 function processAntiRisk(text: string): string {
-    return text.replace(/(https?:\/\/)/gi, "$1 ");
+    // Break URLs so QQ's anti-spam doesn't detect/truncate them
+    // Replace dots in domain part with 。 and add space after protocol
+    return text.replace(/https?:\/\/[^\s)>\]]+/gi, (url) => {
+        return url
+            .replace(/^(https?):\/\//i, "$1：//")  // ：instead of :
+            .replace(/\./g, "。");                   // 。instead of .
+    });
 }
 
 async function resolveMediaUrl(url: string): Promise<string> {
@@ -1000,6 +1007,34 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
     sendText: async ({ to, text, accountId, replyTo }) => {
         const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
         if (!client) return { channel: "qq", sent: false, error: "Client not connected" };
+
+        // Extract MEDIA: absolute paths from text (same logic as deliver fallback)
+        const extractedMedia: string[] = [];
+        const cleanedLines: string[] = [];
+        for (const line of text.split('\n')) {
+            const m = /^MEDIA:\s*(.+)$/i.exec(line.trim());
+            if (m) {
+                const candidate = m[1].replace(/^[`"']+/, '').replace(/[`"']+$/, '').trim();
+                if (candidate.startsWith('/') && !candidate.includes('..')) {
+                    extractedMedia.push(candidate);
+                    continue;
+                }
+            }
+            cleanedLines.push(line);
+        }
+
+        // If MEDIA: paths found, delegate to sendMedia for each
+        if (extractedMedia.length > 0) {
+            const cleanText = cleanedLines.join('\n').trim();
+            for (let i = 0; i < extractedMedia.length; i++) {
+                const mediaText = i === 0 ? cleanText : undefined;
+                const mediaReply = i === 0 ? replyTo : undefined;
+                // Use the plugin's own sendMedia
+                await qqChannel.outbound!.sendMedia!({ to, text: mediaText || "", mediaUrl: extractedMedia[i], accountId: accountId || DEFAULT_ACCOUNT_ID, replyTo: mediaReply });
+            }
+            return { channel: "qq", sent: true };
+        }
+
         const chunks = splitMessage(text, 4000);
         for (let i = 0; i < chunks.length; i++) {
             let message: OneBotMessage | string = chunks[i];
