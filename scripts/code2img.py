@@ -36,7 +36,7 @@ def render(code: str, lang: str = "") -> str:
     # Use a nice dark style
     formatter = ImageFormatter(
         style="monokai",
-        font_name="Noto Sans Mono",
+        font_name="Noto Sans Mono CJK SC",
         font_size=32,
         line_numbers=False,
         image_pad=20,
